@@ -1,5 +1,5 @@
-name: OCI Provision
-
+name: OCI Provision Always On
+# keep-alive ping
 on:
   schedule:
     - cron: '*/5 * * * *'
