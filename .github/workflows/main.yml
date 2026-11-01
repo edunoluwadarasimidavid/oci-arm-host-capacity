@@ -1,4 +1,4 @@
-name: OCI Provision
+name: OCI Provision New 
 
 on:
   schedule:
