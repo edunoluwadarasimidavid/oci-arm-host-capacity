@@ -1,50 +1,68 @@
-name: OCI Provision New 
+name: OCI Provision New
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
+schedule:
+- cron: '*/10 * * * *'
+workflow_dispatch:
 
 concurrency:
-  group: oci-provision
-  cancel-in-progress: false
+group: oci-provision
+cancel-in-progress: false
 
 jobs:
-  provision:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.3'
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress
-      - name: Create .env file
-        run: |
-          cat > .env << EOF
-          OCI_REGION=${{ secrets.OCI_REGION }}
-          OCI_USER_ID=${{ secrets.OCI_USER_ID }}
-          OCI_TENANCY_ID=${{ secrets.OCI_TENANCY_ID }}
-          OCI_KEY_FINGERPRINT=${{ secrets.OCI_KEY_FINGERPRINT }}
-          OCI_PRIVATE_KEY_FILENAME="${{ secrets.OCI_PRIVATE_KEY_FILENAME }}"
-          OCI_SUBNET_ID=${{ secrets.OCI_SUBNET_ID }}
-          OCI_IMAGE_ID=ocid1.image.oc1.eu-milan-1.aaaaaaaaztlkpajvxj2ycjaajovwpljcy2e57eq2ddqscnaftop62636rdiq
-          OCI_OCPUS=2
-          OCI_MEMORY_IN_GBS=12
-          OCI_SHAPE=VM.Standard.A1.Flex
-          OCI_MAX_INSTANCES=1
-          OCI_SSH_PUBLIC_KEY="${{ secrets.OCI_SSH_PUBLIC_KEY }}"
-          OCI_BOOT_VOLUME_SIZE_IN_GBS=100
-          OCI_AVAILABILITY_DOMAIN=MfMD:EU-MILAN-1-AD-1
-          TOO_MANY_REQUESTS_TIME_WAIT=30
-          TELEGRAM_USER_ID=${{ secrets.TELEGRAM_USER_ID }}
-          TELEGRAM_BOT_API_KEY=${{ secrets.TELEGRAM_BOT_API_KEY }}
-          EOF
-      - name: Run provisioner
-        run: |
-          for i in 1 2 3 4 5 6 7 ; do
-            php index.php
-            sleep 30
-          done
+provision:
+runs-on: ubuntu-latest
+timeout-minutes: 8
+
+steps:
+  - uses: actions/checkout@v4
+
+  - name: Install PHP
+    uses: shivammathur/setup-php@v2
+    with:
+      php-version: '8.3'
+
+  - name: Install dependencies
+    run: composer install --prefer-dist --no-progress
+
+  - name: Create .env file
+    run: |
+      cat > .env << EOF
+      OCI_REGION=${{ secrets.OCI_REGION }}
+      OCI_USER_ID=${{ secrets.OCI_USER_ID }}
+      OCI_TENANCY_ID=${{ secrets.OCI_TENANCY_ID }}
+      OCI_KEY_FINGERPRINT=${{ secrets.OCI_KEY_FINGERPRINT }}
+      OCI_PRIVATE_KEY_FILENAME="${{ secrets.OCI_PRIVATE_KEY_FILENAME }}"
+      OCI_SUBNET_ID=${{ secrets.OCI_SUBNET_ID }}
+      OCI_IMAGE_ID=ocid1.image.oc1.eu-milan-1.aaaaaaaaztlkpajvxj2ycjaajovwpljcy2e57eq2ddqscnaftop62636rdiq
+      OCI_OCPUS=2
+      OCI_MEMORY_IN_GBS=12
+      OCI_SHAPE=VM.Standard.A1.Flex
+      OCI_MAX_INSTANCES=1
+      OCI_SSH_PUBLIC_KEY="${{ secrets.OCI_SSH_PUBLIC_KEY }}"
+      OCI_BOOT_VOLUME_SIZE_IN_GBS=100
+      OCI_AVAILABILITY_DOMAIN=MfMD:EU-MILAN-1-AD-1
+      TOO_MANY_REQUESTS_TIME_WAIT=60
+      TELEGRAM_USER_ID=${{ secrets.TELEGRAM_USER_ID }}
+      TELEGRAM_BOT_API_KEY=${{ secrets.TELEGRAM_BOT_API_KEY }}
+      EOF
+
+  - name: Run provisioner (3 attempts)
+    run: |
+      for i in 1 2 3; do
+        echo "Provisioning attempt $i of 3..."
+
+        if php index.php; then
+          echo "Provisioner completed successfully."
+          exit 0
+        fi
+
+        if [ "$i" -lt 3 ]; then
+          WAIT=$((60 * i))
+          echo "Attempt failed. Waiting ${WAIT}s before retry..."
+          sleep "$WAIT"
+        fi
+      done
+
+      echo "All 3 provisioning attempts failed."
+      exit 1
