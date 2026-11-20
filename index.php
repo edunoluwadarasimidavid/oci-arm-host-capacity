@@ -24,6 +24,16 @@ function fail(string $message, int $exitCode = 1): never
     exit($exitCode);
 }
 
+function requiredEnv(string $name): string
+{
+    $value = getenv($name);
+    if ($value === false || trim($value) === '') {
+        throw new RuntimeException("Required environment variable {$name} is missing or empty.");
+    }
+
+    return $value;
+}
+
 try {
 
     // Load environment variables.
@@ -34,16 +44,16 @@ try {
 
     logMessage('OCI ARM capacity provisioner started.');
 
-    // Initialize OCI configuration.
+    // Validate required settings before passing them to strictly typed classes.
     $config = new OciConfig(
-        getenv('OCI_REGION'),
-        getenv('OCI_USER_ID'),
-        getenv('OCI_TENANCY_ID'),
-        getenv('OCI_KEY_FINGERPRINT'),
-        getenv('OCI_PRIVATE_KEY_FILENAME'),
+        requiredEnv('OCI_REGION'),
+        requiredEnv('OCI_USER_ID'),
+        requiredEnv('OCI_TENANCY_ID'),
+        requiredEnv('OCI_KEY_FINGERPRINT'),
+        requiredEnv('OCI_PRIVATE_KEY_FILENAME'),
         getenv('OCI_AVAILABILITY_DOMAIN') ?: null,
-        getenv('OCI_SUBNET_ID'),
-        getenv('OCI_IMAGE_ID'),
+        requiredEnv('OCI_SUBNET_ID'),
+        requiredEnv('OCI_IMAGE_ID'),
         (int) getenv('OCI_OCPUS'),
         (int) getenv('OCI_MEMORY_IN_GBS')
     );
@@ -78,7 +88,8 @@ try {
         return new \Hitrov\Notification\Telegram();
     })();
 
-    $shape = getenv('OCI_SHAPE');
+    $shape = requiredEnv('OCI_SHAPE');
+    $sshPublicKey = requiredEnv('OCI_SSH_PUBLIC_KEY');
 
     $maxRunningInstancesOfThatShape = 1;
 
@@ -129,88 +140,81 @@ try {
         'Found ' . count($availabilityDomains) . ' availability domain(s).'
     );
 
-    // Try each availability domain.
-    foreach ($availabilityDomains as $availabilityDomainEntity) {
+    // Retry capacity checks without repeating the preliminary OCI GET requests.
+    // Each round reuses the same instance list and availability-domain list.
+    $maxCapacityAttempts = 3;
 
-        $availabilityDomain = is_array($availabilityDomainEntity)
-            ? $availabilityDomainEntity['name']
-            : $availabilityDomainEntity;
+    for ($attempt = 1; $attempt <= $maxCapacityAttempts; $attempt++) {
+        logMessage("Capacity attempt {$attempt} of {$maxCapacityAttempts}.");
 
-        logMessage("Attempting provisioning in: {$availabilityDomain}");
+        foreach ($availabilityDomains as $availabilityDomainEntity) {
+            $availabilityDomain = is_array($availabilityDomainEntity)
+                ? ($availabilityDomainEntity['name'] ?? '')
+                : $availabilityDomainEntity;
 
-        try {
-
-            $instanceDetails = $api->createInstance(
-                $config,
-                $shape,
-                getenv('OCI_SSH_PUBLIC_KEY'),
-                $availabilityDomain
-            );
-
-        } catch (ApiCallException $e) {
-
-            $message = $e->getMessage();
-
-            logMessage("OCI API error: {$message}");
-
-            // Detect Oracle host-capacity errors.
-            $isCapacityError =
-                $e->getCode() === 500 &&
-                strpos($message, 'InternalError') !== false &&
-                strpos($message, 'Out of host capacity') !== false;
-
-            if ($isCapacityError) {
-
-                logMessage(
-                    "Capacity unavailable in {$availabilityDomain}."
-                );
-
-                // Try the next availability domain.
-                sleep(16);
-
+            if ($availabilityDomain === '') {
+                logMessage('WARNING: Skipping an availability-domain entry without a name.');
                 continue;
             }
 
-            // Other API errors indicate a configuration or API problem.
-            fail("OCI API request failed: {$message}");
+            logMessage("Attempting provisioning in: {$availabilityDomain}");
 
-        }
+            try {
+                $instanceDetails = $api->createInstance(
+                    $config,
+                    $shape,
+                    $sshPublicKey,
+                    $availabilityDomain
+                );
+            } catch (ApiCallException $e) {
+                $message = $e->getMessage();
+                logMessage("OCI API error: {$message}");
 
-        // Provisioning succeeded.
-        $message = json_encode(
-            $instanceDetails,
-            JSON_PRETTY_PRINT
-        );
+                // Retry only the specific host-capacity response. Other OCI errors
+                // usually indicate a configuration, permission, or quota problem.
+                $isCapacityError =
+                    $e->getCode() === 500 &&
+                    stripos($message, 'InternalError') !== false &&
+                    stripos($message, 'Out of host capacity') !== false;
 
-        if ($message === false) {
-            $message = 'Instance created successfully, but JSON encoding failed.';
-        }
+                if ($isCapacityError) {
+                    logMessage("Capacity unavailable in {$availabilityDomain}.");
+                    continue;
+                }
 
-        logMessage('SUCCESS: OCI instance created!');
-        echo $message . PHP_EOL;
-
-        // Send Telegram notification.
-        try {
-
-            if ($notifier->isSupported()) {
-                $notifier->notify($message);
-                logMessage('Telegram notification sent.');
+                fail("OCI API request failed: {$message}");
             }
 
-        } catch (Throwable $notificationError) {
+            $message = json_encode($instanceDetails, JSON_PRETTY_PRINT | JSON_PARTIAL_OUTPUT_ON_ERROR);
+            if ($message === false) {
+                $message = 'Instance created successfully, but JSON encoding failed.';
+            }
 
-            logMessage(
-                'WARNING: Telegram notification failed: ' .
-                $notificationError->getMessage()
-            );
+            logMessage('SUCCESS: OCI instance created!');
+            echo $message . PHP_EOL;
 
+            // A notification failure must not turn a successful provisioning run
+            // into a failed run that could trigger another OCI create request.
+            try {
+                if ($notifier->isSupported()) {
+                    $notifier->notify($message);
+                    logMessage('Telegram notification sent.');
+                }
+            } catch (Throwable $notificationError) {
+                logMessage('WARNING: Telegram notification failed: ' . $notificationError->getMessage());
+            }
+
+            exit(0);
         }
 
-        exit(0);
+        if ($attempt < $maxCapacityAttempts) {
+            $retryWait = 30 * $attempt;
+            logMessage("All availability domains are full. Waiting {$retryWait} seconds before the next capacity attempt.");
+            sleep($retryWait);
+        }
     }
 
-    // All availability domains exhausted.
-    fail('No capacity available in any discovered availability domain.');
+    fail('CAPACITY_UNAVAILABLE: no capacity available after 3 attempts across the discovered availability domains.', 2);
 
 } catch (Throwable $e) {
 
