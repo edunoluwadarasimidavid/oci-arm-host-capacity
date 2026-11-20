@@ -27,10 +27,10 @@ class FileCache implements CacheInterface
 
         $cache[$method][$cacheKey] = $data;
 
-        file_put_contents(
-            $this->getCacheFilename(),
-            json_encode($cache, JSON_PRETTY_PRINT),
-        );
+        $encoded = json_encode($cache, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR);
+        if (file_put_contents($this->getCacheFilename(), $encoded, LOCK_EX) === false) {
+            throw new \RuntimeException('Unable to write OCI availability-domain cache.');
+        }
     }
 
     /**
@@ -66,9 +66,18 @@ class FileCache implements CacheInterface
      */
     private function getCache(): array
     {
-        $cacheContents = file_get_contents($this->getCacheFilename());
+        $cacheContents = @file_get_contents($this->getCacheFilename());
+        if ($cacheContents === false || trim($cacheContents) === '') {
+            return [];
+        }
 
-        return json_decode($cacheContents, true, 512, JSON_THROW_ON_ERROR);
+        try {
+            $decoded = json_decode($cacheContents, true, 512, JSON_THROW_ON_ERROR);
+            return is_array($decoded) ? $decoded : [];
+        } catch (\JsonException $e) {
+            // A damaged cache must not prevent a fresh OCI availability lookup.
+            return [];
+        }
     }
 
     private function createCacheFile(): void
@@ -78,6 +87,8 @@ class FileCache implements CacheInterface
             return;
         }
 
-        file_put_contents($filename, '{}');
+        if (file_put_contents($filename, '{}', LOCK_EX) === false) {
+            throw new \RuntimeException('Unable to create OCI availability-domain cache.');
+        }
     }
 }
