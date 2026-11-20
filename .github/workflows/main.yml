@@ -1,69 +1,62 @@
 name: OCI Provision New
 
 on:
-schedule:
-- cron: '*/10 * * * *'
-workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 concurrency:
-group: oci-provision
-cancel-in-progress: false
+  group: oci-provision
+  cancel-in-progress: false
 
 jobs:
-provision:
-runs-on: ubuntu-latest
-timeout-minutes: 8
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
 
-steps:
-  - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-  - name: Install PHP
-    uses: shivammathur/setup-php@v2
-    with:
-      php-version: '8.3'
+      - name: Install PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
 
-  - name: Install dependencies
-    run: composer install --prefer-dist --no-progress
+      - name: Install dependencies
+        run: composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
 
-  - name: Create .env file
-    run: |
-      cat > .env << EOF
-      OCI_REGION=eu-milan-1
-      OCI_USER_ID=${{ secrets.OCI_USER_ID }}
-      OCI_TENANCY_ID=${{ secrets.OCI_TENANCY_ID }}
-      OCI_KEY_FINGERPRINT=${{ secrets.OCI_KEY_FINGERPRINT }}
-      OCI_PRIVATE_KEY_FILENAME="${{ secrets.OCI_PRIVATE_KEY_FILENAME }}"
-      OCI_SUBNET_ID=${{ secrets.OCI_SUBNET_ID }}
-      OCI_IMAGE_ID=ocid1.image.oc1.eu-milan-1.aaaaaaaaztlkpajvxj2ycjaajovwpljcy2e57eq2ddqscnaftop62636rdiq
-      OCI_OCPUS=2
-      OCI_MEMORY_IN_GBS=12
-      OCI_SHAPE=VM.Standard.A1.Flex
-      OCI_MAX_INSTANCES=1
-      OCI_SSH_PUBLIC_KEY="${{ secrets.OCI_SSH_PUBLIC_KEY }}"
-      OCI_BOOT_VOLUME_SIZE_IN_GBS=100
-      OCI_AVAILABILITY_DOMAIN=
-      CACHE_AVAILABILITY_DOMAINS=1
-      TOO_MANY_REQUESTS_TIME_WAIT=60
-      TELEGRAM_USER_ID=${{ secrets.TELEGRAM_USER_ID }}
-      TELEGRAM_BOT_API_KEY=${{ secrets.TELEGRAM_BOT_API_KEY }}
-      EOF
+      - name: Create .env file
+        env:
+          OCI_USER_ID: ${{ secrets.OCI_USER_ID }}
+          OCI_TENANCY_ID: ${{ secrets.OCI_TENANCY_ID }}
+          OCI_KEY_FINGERPRINT: ${{ secrets.OCI_KEY_FINGERPRINT }}
+          OCI_PRIVATE_KEY_FILENAME: ${{ secrets.OCI_PRIVATE_KEY_FILENAME }}
+          OCI_SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+          OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TELEGRAM_USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          TELEGRAM_BOT_API_KEY: ${{ secrets.TELEGRAM_BOT_API_KEY }}
+        run: |
+          {
+            printf 'OCI_REGION=%s\n' 'eu-milan-1'
+            printf 'OCI_USER_ID=%s\n' "$OCI_USER_ID"
+            printf 'OCI_TENANCY_ID=%s\n' "$OCI_TENANCY_ID"
+            printf 'OCI_KEY_FINGERPRINT=%s\n' "$OCI_KEY_FINGERPRINT"
+            printf 'OCI_PRIVATE_KEY_FILENAME="%s"\n' "$OCI_PRIVATE_KEY_FILENAME"
+            printf 'OCI_SUBNET_ID=%s\n' "$OCI_SUBNET_ID"
+            printf 'OCI_IMAGE_ID=%s\n' 'ocid1.image.oc1.eu-milan-1.aaaaaaaaztlkpajvxj2ycjaajovwpljcy2e57eq2ddqscnaftop62636rdiq'
+            printf 'OCI_OCPUS=%s\n' '2'
+            printf 'OCI_MEMORY_IN_GBS=%s\n' '12'
+            printf 'OCI_SHAPE=%s\n' 'VM.Standard.A1.Flex'
+            printf 'OCI_MAX_INSTANCES=%s\n' '1'
+            printf 'OCI_SSH_PUBLIC_KEY="%s"\n' "$OCI_SSH_PUBLIC_KEY"
+            printf 'OCI_BOOT_VOLUME_SIZE_IN_GBS=%s\n' '100'
+            printf 'OCI_AVAILABILITY_DOMAIN=%s\n' ''
+            printf 'CACHE_AVAILABILITY_DOMAINS=%s\n' '1'
+            printf 'TOO_MANY_REQUESTS_TIME_WAIT=%s\n' '60'
+            printf 'TELEGRAM_USER_ID=%s\n' "$TELEGRAM_USER_ID"
+            printf 'TELEGRAM_BOT_API_KEY=%s\n' "$TELEGRAM_BOT_API_KEY"
+          } > .env
 
-  - name: Run provisioner (maximum 3 attempts)
-    run: |
-      for i in 1 2 3; do
-        echo "Starting provisioning attempt $i of 3..."
-
-        if php index.php; then
-          echo "Provisioner exited successfully."
-          exit 0
-        fi
-
-        if [ "$i" -lt 3 ]; then
-          WAIT=$((60 * i))
-          echo "Attempt $i failed. Waiting ${WAIT} seconds..."
-          sleep "$WAIT"
-        fi
-      done
-
-      echo "All provisioning attempts failed."
-      exit 1
+      - name: Run provisioner (up to 3 capacity attempts)
+        run: php index.php
