@@ -214,7 +214,16 @@ try {
         }
     }
 
-    fail('CAPACITY_UNAVAILABLE: no capacity available after 3 attempts across the discovered availability domains.', 2);
+    // Host capacity is transient. Treat exhaustion of this run's retries as a
+    // pending attempt, not a broken workflow. The scheduled workflow will try
+    // again on its next run. Keep a visible warning so this is never mistaken
+    // for a successfully provisioned instance.
+    $capacityMessage = 'CAPACITY_UNAVAILABLE: no capacity available after 3 attempts across the discovered availability domains. Will retry on the next scheduled run.';
+    logMessage('WARNING: ' . $capacityMessage);
+    if (getenv('GITHUB_ACTIONS') === 'true') {
+        echo '::warning::' . $capacityMessage . PHP_EOL;
+    }
+    exit(0);
 
 } catch (Throwable $e) {
 
